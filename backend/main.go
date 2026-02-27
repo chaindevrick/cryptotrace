@@ -79,6 +79,9 @@ var (
 		"0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640": "Binance 3",
 		"0xd90e2f925da726b50c4ed8d0fb90ad053324f31b": "Mixer",
 		"0x0000000000000000000000000000000000000000": "Null Address",
+		"0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae": "LI.FI: LiFi Diamond",
+		"0x3B4D794a66304F130a4Db8F2551B0070dfCf5ca7": "Lighter: ZkLighter",
+
 	}
 	cacheMutex sync.RWMutex
 )
