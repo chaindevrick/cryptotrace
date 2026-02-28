@@ -56,24 +56,19 @@ func (r *txRepository) GetGraph(ctx context.Context, input string, isTxHash bool
 		}
 	}
 
-	// ✨ 核心升級：加入「超級節點阻斷機制 (Supernode Pruning)」
 	query := `
 		WITH RECURSIVE connected_nodes AS (
-			-- 第一層：起點
 			SELECT $1::varchar AS address, 0 AS depth
 			UNION
-			-- 遞迴層：往外擴散
 			SELECT 
 				CASE WHEN t.from_address = c.address THEN t.to_address ELSE t.from_address END, 
 				c.depth + 1
 			FROM transactions t 
 			JOIN connected_nodes c ON (t.from_address = c.address OR t.to_address = c.address)
 			JOIN wallets w ON c.address = w.address
-			-- 🛑 阻斷邏輯：
-			-- 只有當前節點是 'wallet' 或 'HighRisk' 時才允許繼續擴散。
-			-- 如果當前節點是交易所 (例如 Binance) 或合約 (例如 Uniswap)，就停止！
-			-- (加上 c.depth = 0 是為了確保：如果使用者一開始就是搜尋 Binance，至少能畫出第一層)
-			WHERE c.depth < 4 AND (w.label IN ('wallet', 'HighRisk') OR c.depth = 0)
+			WHERE c.depth < 4 
+			  AND (w.label IN ('wallet', 'HighRisk') OR c.depth = 0)
+			  AND t.amount >= 0.01 -- 🛡️ 阻斷邏輯 2：過濾掉小於 0.01 U 的灰塵與釣魚交易
 		)
 		SELECT DISTINCT t.hash, t.timestamp, t.from_address, w1.label AS from_label,
 			t.to_address, w2.label AS to_label, t.amount, t.token, t.type
@@ -82,9 +77,10 @@ func (r *txRepository) GetGraph(ctx context.Context, input string, isTxHash bool
 		JOIN connected_nodes n2 ON t.to_address = n2.address
 		JOIN wallets w1 ON t.from_address = w1.address
 		JOIN wallets w2 ON t.to_address = w2.address
+		WHERE t.amount >= 0.01 -- 🛡️ 確保最終輸出的圖表絕對沒有 0.00 的連線
 		LIMIT 150;
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, startAddress)
 	if err != nil {
 		return nil, err
