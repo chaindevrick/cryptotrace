@@ -20,8 +20,7 @@ COPY . .
 # 編譯 Go 程式碼
 # CGO_ENABLED=0: 靜態編譯，確保執行檔可以在沒有 C standard library 的 Alpine 中運行
 # GOOS=linux: 指定作業系統為 Linux
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
-
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/api/main.go
 # ----------------------------------
 # Stage 2: Runner (運行階段)
 # ----------------------------------
