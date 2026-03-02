@@ -5,12 +5,15 @@ import axios from 'axios';
 import cytoscape, { Core } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { Search, Activity, Share2, Target, ShieldAlert, Layers } from 'lucide-react';
-import { GraphElement, AnalysisStats } from '@/types';
+// ✨ 確保引入了 GraphNode 和 GraphEdge
+import { GraphElement, GraphNode, GraphEdge, AnalysisStats } from '@/types';
 
 if (typeof window !== 'undefined') {
   try {
     cytoscape.use(dagre);
-  } catch (e) {}
+  } catch (e) {
+    console.error('Failed to load cytoscape-dagre layout:', e); 
+  }
 }
 
 export default function ForensicsDashboard() {
@@ -54,13 +57,53 @@ export default function ForensicsDashboard() {
         return;
       }
 
+      // ✨ 核心升級：動態風險評估引擎 (Dynamic Risk Scoring) 且具備嚴格型別安全
+      let calculatedRisk = 0;
+      const uniqueNodes = new Set();
+
+      graphData.forEach((element) => {
+        // ✨ TypeScript 類型保護 (Type Guard)：用 'source' 來分辨 Node 還是 Edge
+        if (!('source' in element.data)) {
+          // 這是一顆 Node (安全轉型)
+          const node = element as GraphNode;
+          uniqueNodes.add(node.data.id);
+          
+          const isTarget = node.data.isTarget;
+          const nodeType = node.data.type;
+
+          // 規則 A：如果有關聯的節點是高風險或混幣器
+          if (nodeType === 'HighRisk' || nodeType === 'Mixer') {
+            if (isTarget) {
+              calculatedRisk += 75; // 目標本身是危險的，直接 +75 分
+            } else {
+              calculatedRisk += 15; // 關聯節點是危險的，每個 +15 分
+            }
+          }
+        } else {
+          // 這是一條 Edge (安全轉型)
+          const edge = element as GraphEdge;
+          // 規則 B：如果是被 Trace 演算法抓出來的精準連線
+          if (edge.data.type === 'Trace') {
+            calculatedRisk += 5; // 每多一層洗錢轉移，+5 分
+          }
+        }
+      });
+
+      // 規則 C：確保分數在 0 到 100 之間
+      calculatedRisk = Math.min(100, Math.max(0, calculatedRisk));
+      
+      // 給予基礎基準分
+      if (calculatedRisk === 0) {
+        calculatedRisk = mode === 'trace' ? 12 : 5; 
+      }
+
       setStats({
-        nodeCount: graphData.length,
-        riskScore: mode === 'trace' ? 92 : 35,
+        nodeCount: uniqueNodes.size, // 精準計算節點數量 (不包含連線)
+        riskScore: calculatedRisk,   // 帶入動態計算的風險分數
         mode: mode
       });
+
       setHasGraphData(true);
-      
       setTimeout(() => renderGraph(graphData), 200);
 
     } catch (err: any) {
