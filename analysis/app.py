@@ -20,7 +20,7 @@ def analyze():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # ✨ 升級 1：白名單豁免機制 (Entity Exemption)
+    # 白名單豁免機制 (Entity Exemption)
     # 先查這個錢包在資料庫裡是不是已經被解析為交易所或智能合約
     cursor.execute("SELECT label FROM wallets WHERE address = %s", (target_address,))
     row = cursor.fetchone()
@@ -54,7 +54,6 @@ def analyze():
     df['ai_label'] = clf.fit_predict(X)
     df['anomaly_score'] = clf.decision_function(X) 
 
-    # ✨ 升級 2：散戶投資防呆機制 (Retail Investor Safeguard)
     def is_true_anomaly(row):
         # A: 模型判定異常
         if row['ai_label'] != -1:
@@ -68,9 +67,7 @@ def analyze():
         if not (row['amount'] > median_val * 5 or row['amount'] < median_val / 5):
             return False
             
-        # D: 法規絕對金額門檻 (Absolute AML Threshold) 👈 解決小資族轉帳被誤殺的關鍵
-        # 即使你平常轉 20U，今天領薪水轉了 1000U 去幣安，也不會被標記。
-        # 我們將洗錢特徵的底線設定為單筆 3000 U (可依需求調整)。
+        # 絕對金額門檻 (Absolute AML Threshold)
         if row['amount'] < 3000:
             return False
             
