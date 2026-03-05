@@ -21,162 +21,129 @@ def analyze():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # ==========================================
-    # 🛡️ 1. 白名單豁免機制 (Entity Exemption)
-    # ==========================================
-    cursor.execute("SELECT label FROM wallets WHERE address = %s", (target_address,))
-    row = cursor.fetchone()
-    wallet_label = row[0] if row else 'wallet'
+    try:
+        # ==========================================
+        # 🛡️ 1. 白名單豁免機制
+        # ==========================================
+        cursor.execute("SELECT label FROM wallets WHERE address = %s", (target_address,))
+        row = cursor.fetchone()
+        wallet_label = row[0] if row else 'wallet'
 
-    if wallet_label not in ['wallet', 'HighRisk']:
-        print(f"🛡️ [AI Engine] 目標為已知機構或合約 ({wallet_label})，具備白名單豁免權，跳過 AI 檢測。", flush=True)
-        cursor.close()
-        conn.close()
-        return jsonify({"status": "exempt", "anomalies_found": 0})
+        if wallet_label not in ['wallet', 'HighRisk']:
+            print(f"🛡️ [AI Engine] 目標為已知機構或合約 ({wallet_label})，跳過 AI 檢測。", flush=True)
+            return jsonify({"status": "exempt", "anomalies_found": 0})
 
-    # ==========================================
-    # 🕸️ 2. 獲取 3-Hop 局部網路基準資料 (Baseline Data)
-    # ==========================================
-    # 使用遞迴查詢 (Recursive CTE) 找出目標錢包往外擴展 3 層的所有交易
-    query = """
-        WITH RECURSIVE ego_network AS (
-            -- 第 0 層：目標錢包本身
-            SELECT %s::varchar AS address, 0 AS depth
-            UNION
-            -- 第 1 到 3 層：不斷找出與上一層有交易往來的新錢包
-            SELECT 
-                CASE 
-                    WHEN t.from_address = n.address THEN t.to_address 
-                    ELSE t.from_address 
-                END, 
-                n.depth + 1
-            FROM ego_network n
-            JOIN transactions t ON n.address = t.from_address OR n.address = t.to_address
-            WHERE n.depth < 3
-        )
-        -- 撈出這個三層交友圈內發生的「所有交易」作為基準
-        SELECT from_address, to_address, amount, timestamp, type 
-        FROM transactions 
-        WHERE from_address IN (SELECT address FROM ego_network) 
-           OR to_address IN (SELECT address FROM ego_network)
-    """
-    df = pd.read_sql(query, conn, params=(target_address,))
-
-    if df.empty or len(df) < 5:
-        print(f"⚠️ [AI Engine] 局部網路資料量不足 ({len(df)} 筆)，跳過機器學習分析。", flush=True)
-        cursor.close()
-        conn.close()
-        return jsonify({"status": "insufficient_data", "anomalies_found": 0})
-
-    print(f"📊 [AI Engine] 成功從資料庫讀取 {len(df)} 筆局部網路交易，準備萃取多維度特徵...", flush=True)
-
-    # ==========================================
-    # 🌟 3. 特徵工程 (Feature Engineering: 金額 + 時間 + 頻率)
-    # ==========================================
-    # 確保時間戳記格式正確並依時間排序 (計算時間差必須先排序)
-    df = df.sort_values(by='timestamp').reset_index(drop=True)
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-
-    # [特徵 A] 時間：計算與上一筆交易的時間間隔 (秒數)
-    df['time_diff'] = df['timestamp'].diff().fillna(0)
-
-    # [特徵 B] 頻率：計算過去 24 小時內的交易次數 (Rolling Window)
-    df_indexed = df.set_index('datetime')
-    df['tx_freq_24h'] = df_indexed['amount'].rolling('24h').count().values
-    
-    # 定義多維度輸入特徵 X
-    features = ['amount', 'time_diff', 'tx_freq_24h']
-    X_baseline = df[features].values 
-    
-    # 計算局部網路的日常交易中位數，用於後續比對
-    median_val = df['amount'].median()
-
-    # ==========================================
-    # 🌲 4. 機器學習：訓練局部生態的孤立森林
-    # ==========================================
-    # 使用 'auto' 避免在全正常的網路中硬抓替死鬼
-    clf = IsolationForest(contamination='auto', random_state=42) 
-    
-    # 模型只進行 fit，學習這個「3-Hop 局部網路」的正常標準
-    clf.fit(X_baseline)
-
-    # ==========================================
-    # 🎯 5. 異常檢測：將目標錢包的交易放入森林計算
-    # ==========================================
-    # 篩選出「只屬於目標錢包」發出或接收的交易進行評分
-    target_mask = (df['from_address'] == target_address) | (df['to_address'] == target_address)
-    df_target = df[target_mask].copy()
-    
-    if df_target.empty:
-        cursor.close()
-        conn.close()
-        return jsonify({"status": "no_target_data", "anomalies_found": 0})
-
-    # 對目標錢包的交易進行預測與異常分數計算
-    X_target = df_target[features].values
-    df_target['ai_label'] = clf.predict(X_target)
-    df_target['anomaly_score'] = clf.decision_function(X_target) 
-
-    # ==========================================
-    # ⚖️ 6. 雙重確認邏輯 (Double Verification)
-    # ==========================================
-    def is_true_anomaly(row):
-        # 🛡️ 第一道鎖：AI 必須認為它是異常 (-1)
-        if row['ai_label'] != -1:
-            return False
-            
-        # 🛡️ 第二道鎖：異常分數必須夠低 (越負代表在多維空間中越被孤立)
-        # 設定 -0.05 作為緩衝，防止 auto 模式下邊緣誤差的誤判
-        if row['anomaly_score'] > -0.05:
-            return False
-            
-        # 🛡️ 第三道鎖：絕對金額門檻 (過濾掉小額測試或 Gas Fee，避免誤報)
-        if row['amount'] < 3000:
-            return False
-            
-        # 🛡️ 第四道鎖：洗錢特徵判斷 (滿足以下任一業務邏輯即視為高風險)
-        is_amount_spike = (row['amount'] > median_val * 5)               # 金額突增：偏離日常習慣 5 倍
-        is_rapid_tx = (row['time_diff'] < 60 and row['time_diff'] > 0)   # 機器人特徵：間隔小於 60 秒的連發
-        is_high_freq = (row['tx_freq_24h'] > 20)                         # 高頻特徵：24 小時內單一節點交易超過 20 次
-        
-        # 只要模型給出極低的分數，且符合具體的洗錢特徵，才正式發報
-        if is_amount_spike or is_rapid_tx or is_high_freq:
-            return True
-            
-        return False
-
-    df_target['is_true_anomaly'] = df_target.apply(is_true_anomaly, axis=1)
-    anomalies_found = int(df_target['is_true_anomaly'].sum())
-    
-    # ==========================================
-    # 🚨 7. 警報與狀態更新
-    # ==========================================
-    if anomalies_found > 0:
-        print(f"🚨 [AI Engine] 警報！在局部生態中發現 {anomalies_found} 筆目標錢包的異常洗錢行為！", flush=True)
-        
-        anomalous_amounts = df_target[df_target['is_true_anomaly'] == True]['amount'].tolist()
-        print(f"   👉 異常交易金額: {anomalous_amounts[:5]}... (局部網路中位數: {median_val:.2f})", flush=True)
-
-        # 寫入 HighRisk 標籤
-        update_query = """
-            UPDATE wallets 
-            SET label = 'HighRisk' 
-            WHERE address = %s AND label = 'wallet'
+        # ==========================================
+        # 🕸️ 2. 獲取局部網路基準資料 (加入超級節點防爆機制！)
+        # ==========================================
+        query = """
+            WITH RECURSIVE ego_network AS (
+                SELECT %s::varchar AS address, 0 AS depth
+                UNION
+                SELECT 
+                    CASE WHEN t.from_address = c.address THEN t.to_address ELSE t.from_address END, 
+                    c.depth + 1
+                FROM transactions t 
+                JOIN ego_network c ON (t.from_address = c.address OR t.to_address = c.address)
+                JOIN wallets w ON c.address = w.address
+                -- 🛑 核心防爆機制：遇到交易所就停止擴散，並且深度降為 2 層以保證效能
+                WHERE c.depth < 2 AND (w.label IN ('wallet', 'HighRisk') OR c.depth = 0)
+            )
+            SELECT from_address, to_address, amount, timestamp, type 
+            FROM transactions 
+            WHERE from_address IN (SELECT address FROM ego_network) 
+               OR to_address IN (SELECT address FROM ego_network)
         """
-        cursor.execute(update_query, (target_address,))
-        conn.commit()
-        print(f"🏷️ [AI Engine] 已將一般錢包 {target_address} 升級標記為 'HighRisk'。", flush=True)
-    else:
-        print(f"✅ [AI Engine] 分析完成，目標錢包行為符合此局部網路之常態，未觸發警報 (0/{len(df_target)})。", flush=True)
 
-    cursor.close()
-    conn.close()
-    return jsonify({
-        "status": "analyzed", 
-        "network_baseline_txs": len(df),
-        "target_txs_analyzed": len(df_target),
-        "anomalies_found": anomalies_found
-    })
+        # ⚠️ 修正：只傳入一個參數
+        df = pd.read_sql(query, conn, params=(target_address,))
+
+        if df.empty or len(df) < 5:
+            print(f"⚠️ [AI Engine] 資料量不足 ({len(df)} 筆)，跳過機器學習分析。", flush=True)
+            return jsonify({"status": "insufficient_data", "anomalies_found": 0})
+
+        # ==========================================
+        # 🌟 3. 特徵工程 (Feature Engineering: 金額 + 時間 + 頻率)
+        # ==========================================
+        # 必須先按「發送者」與「時間」進行雙重排序，保證後續運算的準確性
+        df = df.sort_values(by=['from_address', 'timestamp']).reset_index(drop=True)
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+
+        # [特徵 A] 時間差：只計算「同一個發送者」與自己上一筆交易的間隔 (秒)
+        df['time_diff'] = df.groupby('from_address')['timestamp'].diff().fillna(0)
+
+        # [特徵 B] 頻率：只計算「同一個發送者」過去 24 小時內的交易次數
+        df_indexed = df.set_index('datetime')
+        freq_series = df_indexed.groupby('from_address')['amount'].rolling('24h').count()
+        
+        # ✨ 你的完美修正：將第一層的 from_address index 拔除，確保對齊賦值
+        df['tx_freq_24h'] = freq_series.reset_index(level=0, drop=True).values
+        
+        # 定義多維度輸入特徵 X
+        features = ['amount', 'time_diff', 'tx_freq_24h']
+        X_baseline = df[features].values 
+        
+        # 計算局部網路的日常交易中位數，用於後續比對
+        median_val = df['amount'].median()
+
+        # ==========================================
+        # 🌲 4. 機器學習：訓練局部生態的孤立森林
+        # ==========================================
+        clf = IsolationForest(contamination=0.05, random_state=42) 
+        clf.fit(X_baseline)
+
+        # ==========================================
+        # 🎯 5. 異常檢測與雙重確認邏輯
+        # ==========================================
+        target_mask = (df['from_address'] == target_address) | (df['to_address'] == target_address)
+        df_target = df[target_mask].copy()
+        
+        if df_target.empty:
+            return jsonify({"status": "no_target_data", "anomalies_found": 0})
+
+        X_target = df_target[features].values
+        df_target['ai_label'] = clf.predict(X_target)
+        df_target['anomaly_score'] = clf.decision_function(X_target) 
+
+        def is_true_anomaly(row):
+            if row['ai_label'] != -1: return False
+            if row['amount'] < 3000: return False # 法規絕對金額門檻
+                
+            is_amount_spike = (row['amount'] > median_val * 5)               
+            is_rapid_tx = (row['time_diff'] < 60 and row['time_diff'] > 0)   
+            is_high_freq = (row['tx_freq_24h'] > 20)                         
+            
+            return is_amount_spike or is_rapid_tx or is_high_freq
+
+        df_target['is_true_anomaly'] = df_target.apply(is_true_anomaly, axis=1)
+        anomalies_found = int(df_target['is_true_anomaly'].sum())
+        
+        # ==========================================
+        # 🚨 6. 警報與狀態更新
+        # ==========================================
+        if anomalies_found > 0:
+            update_query = "UPDATE wallets SET label = 'HighRisk' WHERE address = %s AND label = 'wallet'"
+            cursor.execute(update_query, (target_address,))
+            conn.commit()
+            print(f"🚨 [AI] 發現 {anomalies_found} 筆異常！已將 {target_address} 標記為 HighRisk。", flush=True)
+        else:
+            print(f"✅ [AI] 分析完成，行為符合常態 (0/{len(df_target)})。", flush=True)
+
+        return jsonify({
+            "status": "analyzed", 
+            "network_baseline_txs": len(df),
+            "target_txs_analyzed": len(df_target),
+            "anomalies_found": anomalies_found
+        })
+
+    except Exception as e:
+        print(f"❌ [AI Engine] 發生嚴重錯誤: {e}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        # 🧹 絕對防禦：無論發生什麼事，保證關閉連線，釋放資料庫資源！
+        cursor.close()
+        conn.close()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001)
