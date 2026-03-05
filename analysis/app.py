@@ -35,9 +35,9 @@ def analyze():
         return jsonify({"status": "exempt", "anomalies_found": 0})
 
     # ==========================================
-    # 🕸️ 2. 獲取局部網路基準資料 (Baseline Data)
+    # 🕸️ 2. 獲取 3-Hop 局部網路基準資料 (Baseline Data)
     # ==========================================
-    # 預設撈取目標錢包及其關聯交易。
+    # 使用遞迴查詢 (Recursive CTE) 找出目標錢包往外擴展 3 層的所有交易
     query = """
         WITH RECURSIVE ego_network AS (
             -- 第 0 層：目標錢包本身
@@ -52,24 +52,23 @@ def analyze():
                 n.depth + 1
             FROM ego_network n
             JOIN transactions t ON n.address = t.from_address OR n.address = t.to_address
-            WHERE n.depth < 3  -- 往外擴展 3 層
+            WHERE n.depth < 3
         )
-        -- 最後，把這個三層交友圈內發生的「所有交易」全部撈出來作為基準
+        -- 撈出這個三層交友圈內發生的「所有交易」作為基準
         SELECT from_address, to_address, amount, timestamp, type 
         FROM transactions 
         WHERE from_address IN (SELECT address FROM ego_network) 
            OR to_address IN (SELECT address FROM ego_network)
     """
-
     df = pd.read_sql(query, conn, params=(target_address,))
 
     if df.empty or len(df) < 5:
-        print(f"⚠️ [AI Engine] 資料量不足 ({len(df)} 筆)，跳過機器學習分析。", flush=True)
+        print(f"⚠️ [AI Engine] 局部網路資料量不足 ({len(df)} 筆)，跳過機器學習分析。", flush=True)
         cursor.close()
         conn.close()
         return jsonify({"status": "insufficient_data", "anomalies_found": 0})
 
-    print(f"📊 [AI Engine] 成功從資料庫讀取 {len(df)} 筆交易，準備萃取多維度特徵...", flush=True)
+    print(f"📊 [AI Engine] 成功從資料庫讀取 {len(df)} 筆局部網路交易，準備萃取多維度特徵...", flush=True)
 
     # ==========================================
     # 🌟 3. 特徵工程 (Feature Engineering: 金額 + 時間 + 頻率)
@@ -95,10 +94,10 @@ def analyze():
     # ==========================================
     # 🌲 4. 機器學習：訓練局部生態的孤立森林
     # ==========================================
-    # contamination=0.05 代表我們假設這個局部生態中大約有 5% 的交易是異常的
-    clf = IsolationForest(contamination=0.05, random_state=42) 
+    # 使用 'auto' 避免在全正常的網路中硬抓替死鬼
+    clf = IsolationForest(contamination='auto', random_state=42) 
     
-    # 模型只進行 fit，學習這個「局部網路 (Ego-network)」的正常標準
+    # 模型只進行 fit，學習這個「3-Hop 局部網路」的正常標準
     clf.fit(X_baseline)
 
     # ==========================================
@@ -122,20 +121,25 @@ def analyze():
     # ⚖️ 6. 雙重確認邏輯 (Double Verification)
     # ==========================================
     def is_true_anomaly(row):
-        # A. 模型必須判定為異常 (-1 代表異常，1 代表正常)
+        # 🛡️ 第一道鎖：AI 必須認為它是異常 (-1)
         if row['ai_label'] != -1:
             return False
             
-        # B. 絕對金額門檻 (過濾掉小額測試或 Gas Fee，避免誤報)
+        # 🛡️ 第二道鎖：異常分數必須夠低 (越負代表在多維空間中越被孤立)
+        # 設定 -0.05 作為緩衝，防止 auto 模式下邊緣誤差的誤判
+        if row['anomaly_score'] > -0.05:
+            return False
+            
+        # 🛡️ 第三道鎖：絕對金額門檻 (過濾掉小額測試或 Gas Fee，避免誤報)
         if row['amount'] < 3000:
             return False
             
-        # C. 洗錢特徵判斷 (滿足以下任一業務邏輯即視為高風險)
+        # 🛡️ 第四道鎖：洗錢特徵判斷 (滿足以下任一業務邏輯即視為高風險)
         is_amount_spike = (row['amount'] > median_val * 5)               # 金額突增：偏離日常習慣 5 倍
         is_rapid_tx = (row['time_diff'] < 60 and row['time_diff'] > 0)   # 機器人特徵：間隔小於 60 秒的連發
         is_high_freq = (row['tx_freq_24h'] > 20)                         # 高頻特徵：24 小時內單一節點交易超過 20 次
         
-        # 只要模型認為是異常，且符合上述任何一個具體的洗錢特徵，就發報
+        # 只要模型給出極低的分數，且符合具體的洗錢特徵，才正式發報
         if is_amount_spike or is_rapid_tx or is_high_freq:
             return True
             
