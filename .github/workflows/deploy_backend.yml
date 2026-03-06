@@ -11,6 +11,7 @@ env:
   REGION: us-central1
   REPO_NAME: cryptotrace-repo
   SERVICE_NAME: cryptotrace-backend
+  DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
 
 jobs:
   deploy:
@@ -55,7 +56,6 @@ jobs:
           # 設定環境變數
           env_vars: |
             DB_HOST=/cloudsql/${{ secrets.DB_INSTANCE_NAME }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             ETHERSCAN_API_KEY=${{ secrets.ETHERSCAN_API_KEY }}
             AI_ENGINE_URL=${{ secrets.AI_ENGINE_URL }}
             DUNE_API_KEY=${{ secrets.DUNE_API_KEY }}
