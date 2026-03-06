@@ -18,12 +18,20 @@ func main() {
 	// 1. 載入環境變數
 	_ = godotenv.Load()
 
-	dbURL := os.Getenv("DATABASE_URL")
 	etherscanAPIKey := os.Getenv("ETHERSCAN_API_KEY")
 	aiEngineURL := os.Getenv("AI_ENGINE_URL")
 
 	// 2. 初始化基礎設施 (Infrastructure)
-	dbConn := postgres.NewConnection(dbURL)
+	dbCfg := postgres.DBConfig{
+		Host:     os.Getenv("DB_HOST"),     // 例如: /cloudsql/your-project:us-central1:instance
+		Port:     "5432",     // 本地端通常為 5432，Cloud Run Socket 可留空
+		User:     "postgres",     // 例如: postgres
+		Password: os.Getenv("DB_PASSWORD"), // 你的密碼
+		DBName:   "cryptotrace-pgdb",     // 例如: cryptotrace
+		SSLMode:  "disable",
+	}
+
+	dbConn := postgres.NewConnection(dbCfg)
 	defer dbConn.Close()
 
 	// ==========================================

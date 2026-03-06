@@ -2,20 +2,40 @@ package postgres
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 
 	_ "github.com/lib/pq"
 )
 
+// DBConfig 定義資料庫的連線參數，明確拆分帳號與密碼
+type DBConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+	DBName   string
+	SSLMode  string
+}
+
 // NewConnection 建立並回傳 PostgreSQL 連線
-func NewConnection(dsn string) *sql.DB {
+func NewConnection(cfg DBConfig) *sql.DB {
+	// 動態組合安全的 Key-Value 格式 DSN (Data Source Name)
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
+	)
+
+	log.Printf("🔌 [DB] 正在連線至 PostgreSQL (Host: %s, User: %s)...", cfg.Host, cfg.User)
+
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		log.Fatalf("❌ [DB] Failed to connect: %v", err)
+		log.Fatalf("❌ [DB] 連線物件建立失敗: %v", err)
 	}
 
+	// 測試實際連線與密碼驗證
 	if err := db.Ping(); err != nil {
-		log.Fatalf("❌ [DB] Ping failed: %v", err)
+		log.Fatalf("❌ [DB] Ping 失敗 (請檢查帳號、密碼或白名單設定): %v", err)
 	}
 
 	// 初始化 Schema
@@ -38,9 +58,9 @@ func NewConnection(dsn string) *sql.DB {
 	`
 	_, err = db.Exec(schema)
 	if err != nil {
-		log.Fatalf("❌ [DB] Failed to initialize schema: %v", err)
+		log.Fatalf("❌ [DB] Schema 初始化失敗: %v", err)
 	}
 
-	log.Println("✅ [DB] PostgreSQL Schema Initialized")
+	log.Println("✅ [DB] PostgreSQL 連線成功且 Schema 初始化完畢")
 	return db
 }

@@ -54,7 +54,8 @@ jobs:
           flags: --add-cloudsql-instances=${{ secrets.DB_INSTANCE_NAME }} --allow-unauthenticated
           # 設定環境變數
           env_vars: |
-            DATABASE_URL=postgres://postgres:password123@/${{ secrets.DB_NAME }}?host=/cloudsql/${{ secrets.DB_INSTANCE_NAME }}&sslmode=disable
+            DB_HOST=/cloudsql/${{ secrets.DB_INSTANCE_NAME }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             ETHERSCAN_API_KEY=${{ secrets.ETHERSCAN_API_KEY }}
-            AI_ENGINE_URL=http://ai-engine:5001/analyze
+            AI_ENGINE_URL=${{ secrets.AI_ENGINE_URL }}
             DUNE_API_KEY=${{ secrets.DUNE_API_KEY }}
