@@ -65,7 +65,7 @@ func main() {
 	// 6. 啟動伺服器
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "3000"
+		port = "8080"
 	}
 
 	log.Printf("🚀 Enterprise CryptoTrace Backend running on port %s", port)
