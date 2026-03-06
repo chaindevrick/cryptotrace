@@ -1,8 +1,10 @@
 # Stage 1: Dependencies
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+# 使用萬用字元確保 package.json 與 package-lock.json (如果有的話) 都會被複製
+COPY package*.json ./
+# 改用 npm install，這樣就算沒有 lock 檔也能自動生成並安裝
+RUN npm install
 
 # Stage 2: Builder
 FROM node:20-alpine AS builder
