@@ -55,4 +55,5 @@ jobs:
           flags: --add-cloudsql-instances=${{ secrets.DB_INSTANCE_NAME }} --allow-unauthenticated
           # 設定環境變數
           env_vars: |
-            DATABASE_URL=postgres://postgres:password123@/${{ secrets.DB_NAME }}?host=/cloudsql/${{ secrets.DB_INSTANCE_NAME }}&sslmode=disable
+            DB_HOST=/cloudsql/${{ secrets.DB_INSTANCE_NAME }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}

@@ -8,8 +8,23 @@ import psycopg2
 app = Flask(__name__)
 
 def get_db_connection():
-    db_url = os.getenv("DATABASE_URL", "postgresql://postgres:password123@postgres:5432/cryptotrace")
-    return psycopg2.connect(db_url)
+    db_host = os.getenv("DB_HOST", "postgres") 
+    db_port = "5432"
+    db_user = "postgres"
+    db_password = os.getenv("DB_PASSWORD", "password123")
+    db_name = "cryptotrace"
+
+    print(f"🔌 [AI Engine] 正在連線至 PostgreSQL (Host: {db_host}, User: {db_user})...", flush=True)
+
+    # 💡 psycopg2 支援直接傳入參數 (Keyword Arguments)
+    # 這樣做最安全，完全不用擔心密碼有特殊符號，也不用管 Unix Socket 路徑格式！
+    return psycopg2.connect(
+        host=db_host,
+        port=db_port,
+        user=db_user,
+        password=db_password,
+        dbname=db_name
+    )
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
