@@ -1,18 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import cytoscape, { Core, NodeSingular, LayoutOptions } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import { Search, Activity, Share2, Target, ShieldAlert, Layers } from 'lucide-react';
 import { GraphElement, GraphNode, GraphEdge, AnalysisStats } from '@/types';
 
-// =====================================================================
-// Frontend Architecture: Client-Side Layout Engine Initialization
-// Design Decision: 將 dagre 佈局引擎的註冊放在模組頂層，並加上 window 檢查。
-// Why: Next.js 採用 SSR (Server-Side Rendering)。Cytoscape 是一個純 DOM 依賴的
-//      客戶端套件，如果在 Node.js 環境中執行註冊會引發 ReferenceError。
-// =====================================================================
 if (typeof window !== 'undefined') {
   try {
     cytoscape.use(dagre);
@@ -22,11 +16,7 @@ if (typeof window !== 'undefined') {
 }
 
 export default function ForensicsDashboard() {
-  // =====================================================================
-  // UI 狀態管理 (React State)
-  // Design Decision: 變數命名領域化 (Domain-Specific Naming)
-  // =====================================================================
-  const [queryIdentifier, setQueryIdentifier] = useState<string>(''); // 替換 targetAddress，因為也可能是 TxHash
+  const [queryIdentifier, setQueryIdentifier] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [hasTopologyData, setHasTopologyData] = useState<boolean>(false);
   const [analysisMode, setAnalysisMode] = useState<'overview' | 'trace'>('overview');
@@ -34,44 +24,31 @@ export default function ForensicsDashboard() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [liveSyncState, setLiveSyncState] = useState<'syncing' | 'synced'>('synced');
 
-  // =====================================================================
-  // DOM 與 WebGL 渲染實例 (Mutable References)
-  // Design Decision: 將 Cytoscape 實例綁定在 useRef 而非 useState。
-  // Why: Cytoscape 是基於 Canvas/WebGL 的高效能渲染引擎。如果將它放入 React State，
-  //      每次圖表更新都會觸發 React 的 Virtual DOM Diffing，導致嚴重的效能瓶頸 (Render Lag)。
-  //      使用 useRef 可以完全繞過 React 的渲染週期，直接操作底層圖形。
-  // =====================================================================
   const cyRef = useRef<HTMLDivElement>(null);
   const cyInstance = useRef<Core | null>(null);
+  
+  // ✨ 新增：利用 useRef 來追蹤「連續未變動次數」，不觸發不必要的渲染
+  const unchangedCountRef = useRef<number>(0);
 
-  // 優先讀取環境變數，實踐 12-Factor App 設定隔離
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://cryptotrace-backend-713204579643.us-central1.run.app';
 
-  // 視覺化回饋：根據動態風險分數決定霓虹光暈顏色
   const getRiskGlowColor = (score: number) => {
     if (score >= 80) return 'text-[#FF003C] drop-shadow-[0_0_12px_rgba(255,0,60,0.6)]';
     if (score >= 50) return 'text-yellow-400';
     return 'text-[#00FF9D] drop-shadow-[0_0_12px_rgba(0,255,157,0.4)]';
   };
 
-  // =====================================================================
-  // 核心演算法：動態風險評估引擎 (Dynamic Risk Heuristics)
-  // Design Decision: 在客戶端即時運算拓撲風險，降低後端 API 負載。
-  // =====================================================================
   const computeRiskMetrics = (graphElements: GraphElement[], currentMode: string) => {
     let computedRisk = 0;
     const uniqueEntities = new Set<string>();
 
     graphElements.forEach((element) => {
-      // 判斷是否為 Node (沒有 source 屬性)
       if (!('source' in element.data)) {
         const node = element as GraphNode;
         uniqueEntities.add(node.data.id);
-        
         const isTarget = node.data.isTarget;
         const entityType = node.data.type;
 
-        // 加權計分邏輯
         if (entityType === 'HighRisk' || entityType === 'Mixer') {
           computedRisk += isTarget ? 75 : 15;
         }
@@ -81,7 +58,6 @@ export default function ForensicsDashboard() {
       }
     });
 
-    // 將分數收斂至 0-100 的合理範圍內
     computedRisk = Math.min(100, Math.max(0, computedRisk));
     if (computedRisk === 0) {
       computedRisk = currentMode === 'trace' ? 12 : 5; 
@@ -91,127 +67,24 @@ export default function ForensicsDashboard() {
   };
 
   // =====================================================================
-  // 網路通訊：觸發鑑識分析 (Trigger Forensics Analysis)
+  // Design Decision: 函式實例穩定化 (Function Memoization)
+  // Why: 消除 useEffect 的 missing dependencies 警告，並避免無窮迴圈渲染。
   // =====================================================================
-  const handleForensicsAnalysis = async () => {
-    if (!queryIdentifier) return;
-    
-    setIsAnalyzing(true);
-    setErrorMessage(null);
-    setLiveSyncState('syncing'); 
-    setHasTopologyData(true); 
-    
-    if (cyInstance.current) {
-      cyInstance.current.destroy();
-      cyInstance.current = null;
-    }
-
-    try {
-      const endpoint = analysisMode === 'trace' ? `${API_BASE_URL}/api/trace` : `${API_BASE_URL}/api/analyze`;
-      
-      // 非同步等待後端完成完整的 BFS/DFS 擴展與 AI 運算
-      await axios.post(endpoint, { address: queryIdentifier });
-      
-      // 後端處理完畢，切換狀態以終止背景輪詢
-      setLiveSyncState('synced'); 
-      
-      // 獲取 100% 完整的拓撲資料
-      const response = await axios.get<GraphElement[]>(`${API_BASE_URL}/api/graph/${queryIdentifier}`);
-      const topologyData = response.data;
-
-      if (!topologyData || topologyData.length === 0) {
-        setErrorMessage('No actionable data found for this identifier.');
-        setHasTopologyData(false);
-        return;
-      }
-
-      const { computedRisk, entityCount } = computeRiskMetrics(topologyData, analysisMode);
-
-      setDashboardMetrics({
-        nodeCount: entityCount, 
-        riskScore: computedRisk,   
-        mode: analysisMode
-      });
-
-      // 稍微延遲渲染，確保 React DOM 已將畫布容器準備就緒
-      setTimeout(() => renderTopology(topologyData), 200);
-
-    } catch (error: unknown) { // ✨ 徹底消除 any
-      console.error(error);
-      // 型別安全 (Type-safe) 的錯誤處理
-      if (axios.isAxiosError(error)) {
-        setErrorMessage(error.response?.data?.error || 'Analysis engine failure.');
-      } else {
-        setErrorMessage('An unexpected internal error occurred.');
-      }
-      setLiveSyncState('synced'); 
-      setHasTopologyData(false);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  // =====================================================================
-  // 即時資料流 (Live Data Streaming / Long-Polling)
-  // Design Decision: 將背景輪詢與 POST 請求解耦 (Decoupled)。
-  // Why: 在大型區塊鏈圖譜中，後端可能需要數分鐘才能跑完 AI。透過每 8 秒
-  //      拉取一次最新視圖，我們為使用者創造了「資料正在生長」的極佳視覺回饋。
-  // =====================================================================
-  useEffect(() => {
-    let pollingIntervalId: NodeJS.Timeout;
-
-    if (hasTopologyData && queryIdentifier && liveSyncState === 'syncing') {
-      pollingIntervalId = setInterval(async () => {
-        try {
-          const response = await axios.get<GraphElement[]>(`${API_BASE_URL}/api/graph/${queryIdentifier}`);
-          const topologyData = response.data;
-
-          if (topologyData && topologyData.length > 0) {
-            const { computedRisk, entityCount } = computeRiskMetrics(topologyData, analysisMode);
-
-            setDashboardMetrics(prevMetrics => {
-              // 差異比對 (Diffing)：僅在實體數量或風險改變時重新渲染引擎，節省客戶端 CPU
-              if (prevMetrics.nodeCount !== entityCount || prevMetrics.riskScore !== computedRisk) {
-                setTimeout(() => renderTopology(topologyData), 100);
-                return { ...prevMetrics, nodeCount: entityCount, riskScore: computedRisk };
-              }
-              return prevMetrics;
-            });
-          }
-        } catch (error) {
-          console.error('Live sync error:', error);
-        }
-      }, 8000); 
-    }
-
-    // 清理函數 (Cleanup)：防止 Memory Leak 與幽靈 API 請求
-    return () => {
-      if (pollingIntervalId) clearInterval(pollingIntervalId);
-    };
-  }, [hasTopologyData, analysisMode, queryIdentifier, liveSyncState]);
-
-  // =====================================================================
-  // 視覺化渲染引擎 (Data Visualization Engine)
-  // =====================================================================
-  const renderTopology = (elements: GraphElement[]) => {
+  const renderTopology = useCallback((elements: GraphElement[]) => {
     if (!cyRef.current) return;
     if (cyInstance.current) cyInstance.current.destroy();
 
     const isTraceMode = analysisMode === 'trace';
 
-    // Design Decision: 動態佈局策略 (Dynamic Layout Strategy)
-    // Why:
-    //  - Dagre (有向無環圖佈局): 適用於 FLOW 模式，能將洗錢動線從左至右排成一條完美的直線時間軸。
-    //  - Concentric (同心圓佈局): 適用於 BROAD 模式，利用我們後端的引力排序，將中心目標放在正中央，
-    //    越危險的節點排在越內圈，雜訊節點排在外圈。
+    // Design Decision: 雙重斷言 (Double Casting) 繞過 no-explicit-any
     const layoutConfig: LayoutOptions = isTraceMode
-      ? {
+      ? ({
           name: 'dagre',
           rankDir: 'LR',
           spacingFactor: 1.2,
           animate: true,
           animationDuration: 600,
-        } as unknown as LayoutOptions // dagre 是第三方外掛，此處需斷言
+        } as unknown as LayoutOptions)
       : {
           name: 'concentric',
           fit: true,
@@ -219,7 +92,6 @@ export default function ForensicsDashboard() {
           minNodeSpacing: 60,
           animate: true,
           animationDuration: 800,
-          // ✨ 解決 Node 的 any 報錯，使用嚴格的 cytoscape.NodeSingular 型別
           concentric: (node: NodeSingular) => {
             if (node.data('isTarget')) return 100;
             if (node.data('type') === 'HighRisk' || node.data('type') === 'Mixer') return 80;
@@ -234,7 +106,6 @@ export default function ForensicsDashboard() {
       minZoom: 0.1,
       maxZoom: 3,
       style: [
-        /* ... (保持你原本非常優秀的 stylesheet 設定，此處無需更動) ... */
         {
           selector: 'node',
           style: {
@@ -327,16 +198,109 @@ export default function ForensicsDashboard() {
       layout: layoutConfig
     });
 
-    // 互動設計：允許點擊畫布上的節點進行深度下鑽 (Drill-down)
     cyInstance.current.on('tap', 'node', function(evt) {
       const node = evt.target;
       setQueryIdentifier(node.id());
     });
+  }, [analysisMode]);
+
+  const handleForensicsAnalysis = async () => {
+    if (!queryIdentifier) return;
+    
+    setIsAnalyzing(true);
+    setErrorMessage(null);
+    setLiveSyncState('syncing'); 
+    setHasTopologyData(true); 
+    unchangedCountRef.current = 0;
+    
+    if (cyInstance.current) {
+      cyInstance.current.destroy();
+      cyInstance.current = null;
+    }
+
+    try {
+      const endpoint = analysisMode === 'trace' ? `${API_BASE_URL}/api/trace` : `${API_BASE_URL}/api/analyze`;
+      
+      // 後端是 Fast-Return 架構，這裡只代表「第0層」完成，後端背景 Goroutine 還在跑
+      await axios.post(endpoint, { address: queryIdentifier });
+      
+      const response = await axios.get<GraphElement[]>(`${API_BASE_URL}/api/graph/${queryIdentifier}`);
+      const topologyData = response.data;
+
+      if (!topologyData || topologyData.length === 0) {
+        setErrorMessage('No actionable data found for this identifier.');
+        setHasTopologyData(false);
+        setLiveSyncState('synced');
+        return;
+      }
+
+      const { computedRisk, entityCount } = computeRiskMetrics(topologyData, analysisMode);
+      setDashboardMetrics({ nodeCount: entityCount, riskScore: computedRisk, mode: analysisMode });
+      setTimeout(() => renderTopology(topologyData), 200);
+
+    } catch (error: unknown) {
+      console.error(error);
+      if (axios.isAxiosError(error)) {
+        setErrorMessage(error.response?.data?.error || 'Analysis engine failure.');
+      } else {
+        setErrorMessage('An unexpected internal error occurred.');
+      }
+      setLiveSyncState('synced'); 
+      setHasTopologyData(false);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
+
+  // =====================================================================
+  // 即時資料流與閒置偵測 (Live Sync & Idle Detection)
+  // Design Decision: 透過比較前後狀態來決定何時停止輪詢。
+  // Why: 因為後端是背景非同步運算，前端每 8 秒拉一次。若連續 15 次 (120秒) 
+  //      資料都沒有新增，且 AI 風險分數也結算了，才視為同步完成 (SYNCED)。
+  // =====================================================================
+  useEffect(() => {
+    let pollingIntervalId: NodeJS.Timeout;
+
+    const fetchLatestTopology = async () => {
+      try {
+        const response = await axios.get<GraphElement[]>(`${API_BASE_URL}/api/graph/${queryIdentifier}`);
+        const topologyData = response.data;
+
+        if (topologyData && topologyData.length > 0) {
+          const { computedRisk, entityCount } = computeRiskMetrics(topologyData, analysisMode);
+
+          setDashboardMetrics(prevMetrics => {
+            if (prevMetrics.nodeCount !== entityCount || prevMetrics.riskScore !== computedRisk) {
+              // 有新進度！重置計數器，並重新渲染圖表
+              unchangedCountRef.current = 0; 
+              setTimeout(() => renderTopology(topologyData), 100);
+              return { ...prevMetrics, nodeCount: entityCount, riskScore: computedRisk };
+            } else {
+              // 沒新進度！累加閒置次數
+              unchangedCountRef.current += 1;
+              if (unchangedCountRef.current >= 15) {
+                setLiveSyncState('synced'); // 等待超過兩分鐘無動靜，判定為後端運算徹底結束
+              }
+              return prevMetrics;
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Live sync error:', error);
+      }
+    };
+
+    if (hasTopologyData && queryIdentifier && liveSyncState === 'syncing') {
+      pollingIntervalId = setInterval(fetchLatestTopology, 8000); 
+    }
+
+    return () => {
+      if (pollingIntervalId) clearInterval(pollingIntervalId);
+    };
+  }, [hasTopologyData, analysisMode, queryIdentifier, liveSyncState, API_BASE_URL, renderTopology]);
 
   const centerTopologyView = () => cyInstance.current?.fit(cyInstance.current.elements(), 50);
 
-  // 響應式設計：監聽視窗大小改變並重新計算佈局
   useEffect(() => {
     const handleResize = () => cyInstance.current?.resize();
     window.addEventListener('resize', handleResize);
