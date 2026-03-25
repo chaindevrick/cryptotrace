@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -48,7 +49,7 @@ func (h *ForensicsHandler) Analyze(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "No actionable graph data discovered in this time window"})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{"status": "success", "count": count})
 }
 
@@ -65,7 +66,7 @@ func (h *ForensicsHandler) Trace(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
@@ -84,11 +85,29 @@ func (h *ForensicsHandler) GetGraph(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to construct graph topology"})
 		return
 	}
-	
+
 	currentStatus := h.analyzer.GetStatus(c.Request.Context(), targetAddress)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":   currentStatus,
 		"elements": graphElements,
 	})
+}
+
+func (h *ForensicsHandler) DownloadReport(c *gin.Context) {
+	targetAddress := strings.ToLower(strings.TrimSpace(c.Param("address")))
+	if targetAddress == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Address is required"})
+		return
+	}
+
+	reportBytes, err := h.analyzer.GetReport(c.Request.Context(), targetAddress)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate report"})
+		return
+	}
+
+	filename := fmt.Sprintf("CryptoTrace_Report_%s.md", targetAddress)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Data(http.StatusOK, "text/markdown", reportBytes)
 }

@@ -57,6 +57,8 @@ func NewRouter(handler *ForensicsHandler) *gin.Engine {
 		
 		// 視覺化同步：提供前端 Cytoscape.js 進行 Live Sync 的無副作用端點
 		api.GET("/graph/:address", handler.GetGraph) 
+
+		api.GET("/report/:address", handler.DownloadReport)
 	}
 
 	return r

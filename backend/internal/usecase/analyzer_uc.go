@@ -21,6 +21,10 @@ func NewAnalyzerUsecase(base BaseUsecase) domain.AnalyzerUsecase {
 	return &analyzerUsecase{BaseUsecase: base}
 }
 
+func (uc *analyzerUsecase) GetReport(ctx context.Context, address string) ([]byte, error) {
+	return uc.AIRepo.ExportReport(ctx, address)
+}
+
 func (uc *analyzerUsecase) GetStatus(ctx context.Context, address string) string {
 	val, ok := uc.syncState.Load(strings.ToLower(address))
 	if !ok {

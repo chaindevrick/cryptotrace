@@ -16,11 +16,13 @@ type EtherscanRepository interface {
 
 type AIRepository interface {
 	TriggerAnalysis(ctx context.Context, address string, startTime, endTime int64) error
+	ExportReport(ctx context.Context, address string) ([]byte, error)
 }
 
 type AnalyzerUsecase interface {
 	Analyze(ctx context.Context, address string, startTime, endTime int64) (int, error)
-	GetStatus(ctx context.Context, address string) string 
+	GetStatus(ctx context.Context, address string) string
+	GetReport(ctx context.Context, address string) ([]byte, error) 
 }
 
 type TracerUsecase interface {

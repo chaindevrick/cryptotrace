@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"backend/internal/domain"
@@ -20,9 +22,34 @@ func NewClient(engineURL string) domain.AIRepository {
 	return &aiClient{
 		engineURL: engineURL,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second, // 容許 Python 冷啟動
+			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+func (c *aiClient) ExportReport(ctx context.Context, address string) ([]byte, error) {
+	// 🚨 核心修復 1：安全地替換掉 URL 結尾的 /analyze，避免路徑疊加錯誤
+	baseURL := strings.Replace(c.engineURL, "/analyze", "", 1)
+	url := fmt.Sprintf("%s/export_report?address=%s", baseURL, address)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// 🚨 核心修復 2：抓出 Python 真實的報錯訊息，幫助未來除錯
+		errBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("AI engine failed (HTTP %d): %s", resp.StatusCode, string(errBody))
+	}
+
+	return io.ReadAll(resp.Body)
 }
 
 func (c *aiClient) TriggerAnalysis(ctx context.Context, address string, startTime, endTime int64) error {

@@ -4,11 +4,13 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import cytoscape, { Core, LayoutOptions } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
-import { Search, Activity, Share2, Target, ShieldAlert, Calendar } from 'lucide-react';
+import { Search, Activity, Share2, Target, ShieldAlert, Calendar, FileDown } from 'lucide-react';
 import { GraphElement, GraphNode, GraphEdge, AnalysisStats } from '@/types';
 
 if (typeof window !== 'undefined') {
-  try { cytoscape.use(dagre); } catch (e) {}
+  try { cytoscape.use(dagre); } catch (e) {
+    console.error('Failed to load cytoscape-dagre layout extension:', e);
+  }
 }
 
 const stringToColor = (str: string) => {
@@ -180,6 +182,31 @@ export default function ForensicsDashboard() {
     });
   }, []); 
 
+  // ==========================================
+  // 💡 匯出法遵報告 (下載 Blob 邏輯)
+  // ==========================================
+  const handleDownloadReport = async () => {
+    if (!queryIdentifier) return;
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/report/${queryIdentifier}`, {
+        responseType: 'blob', // 告訴 axios 我們接收的是二進制檔案
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `CryptoTrace_Report_${queryIdentifier.substring(0, 8)}.md`);
+      document.body.appendChild(link);
+      link.click();
+      
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to download report', error);
+      setErrorMessage('Failed to export compliance report.');
+    }
+  };
+
   const handleForensicsAnalysis = async () => {
     if (!queryIdentifier) return;
     
@@ -284,6 +311,7 @@ export default function ForensicsDashboard() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // 💡 狀態遮罩：嚴格綁定，只要還在 syncing，就絕對不顯示分數
   const isCalculatingScore = liveSyncState === 'syncing';
   const scoreColorClass = isCalculatingScore 
     ? 'text-[#00E0FF] drop-shadow-[0_0_8px_rgba(0,224,255,0.5)]' 
@@ -294,6 +322,7 @@ export default function ForensicsDashboard() {
       <div className="absolute inset-0 z-0 bg-[radial-gradient(#ffffff15_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none" />
       <div ref={cyRef} style={{ position: 'absolute', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 10 }} />
 
+      {/* 左上角操作面板 */}
       <div className="absolute top-8 left-8 z-20 w-[400px] flex flex-col gap-6">
         <div className="bg-[#121216]/80 backdrop-blur-xl border border-white/10 rounded-xl p-6 shadow-2xl">
           <div className="flex items-center gap-3 mb-6">
@@ -376,6 +405,7 @@ export default function ForensicsDashboard() {
         </div>
       </div>
 
+      {/* 右上角 Intelligence 雷達 */}
       {hasTopologyData && (
         <div className="absolute top-8 right-8 z-20 w-[280px]">
           <div className="bg-[#121216]/80 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden shadow-2xl">
@@ -418,10 +448,24 @@ export default function ForensicsDashboard() {
                 </span>
               </div>
             </div>
+
+            {/* 💡 匯出報告按鈕區塊 */}
+            <div className="border-t border-white/5 p-4 bg-white/[0.02]">
+              <button 
+                onClick={handleDownloadReport}
+                disabled={liveSyncState === 'syncing'}
+                className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#00E0FF]/10 hover:bg-[#00E0FF]/20 border border-[#00E0FF]/30 rounded-lg text-[#00E0FF] text-xs font-mono tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <FileDown size={14} /> 
+                {liveSyncState === 'syncing' ? 'AWAITING AI...' : 'EXPORT REPORT'}
+              </button>
+            </div>
+
           </div>
         </div>
       )}
 
+      {/* 右下角圖例 */}
       <div className="absolute bottom-8 right-8 z-20 flex flex-col gap-4 items-end">
         <button onClick={centerTopologyView} className="p-3 bg-[#121216]/80 backdrop-blur-xl border border-white/10 rounded-xl hover:bg-white/10 transition-colors text-slate-300 hover:text-white" title="Recenter Topology">
           <Target size={20} />
@@ -438,12 +482,13 @@ export default function ForensicsDashboard() {
           <div className="flex items-center gap-3 mb-3 text-xs font-mono text-slate-300">
             <span className="w-3 h-3 rounded-full bg-slate-500/60 border-2 border-[#FF003C] shadow-[0_0_8px_rgba(255,0,60,0.8)]"></span> AI High Risk
           </div>
-          <div className="flex items-center gap-3 mb-3 text-xs font-mono text-slate-300">
+          <div className="flex items-center gap-3 text-xs font-mono text-slate-300">
             <span className="w-3 h-3 rounded-full border-2 border-[#B58900]" style={{ shapeOutside: 'polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%)', clipPath: 'polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%)' }}></span> Cross-Chain Bridge
           </div>
         </div>
       </div>
 
+      {/* 掃描覆蓋動畫 */}
       {isAnalyzing && (
         <div className="absolute inset-0 z-50 bg-[#0A0A0C]/70 backdrop-blur-sm flex flex-col items-center justify-center pointer-events-none">
           <div className="relative w-64 h-1 bg-[#1E1E24] rounded-full overflow-hidden mb-6">
